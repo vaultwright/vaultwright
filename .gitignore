@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+
+# Personal dogfood configs (personal vault paths, domains — not part of open-core template)
+config/domains.*.yaml
+!config/domains.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime artifacts
+logs/
+*.log
+data/
+
+# OS / editor
+.DS_Store
+*.bak
+*.swp

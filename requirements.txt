@@ -1,0 +1,4 @@
+# Vaultwright dependencies
+python-telegram-bot>=21.0   # the Telegram capture bot
+anthropic>=0.39.0           # LLM intent classification
+PyYAML>=6.0                 # config/domains.yaml

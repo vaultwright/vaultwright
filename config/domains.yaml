@@ -1,0 +1,67 @@
+# Vaultwright — domain configuration
+# ====================================
+# This file defines YOUR system. Edit it freely — add, rename, or remove domains.
+# The classifier, the router, and the vault folder structure all derive from this
+# file, so you shape the whole system here without touching any code.
+#
+# After changing this file, re-run:  bash scripts/setup.sh
+# (it creates folders for any new domains; nothing is deleted).
+
+# Where your Obsidian vault lives. ~ is expanded to your home directory.
+vault_path: ~/vault
+
+# Your domains. Each becomes a folder in the vault with an inbox/ subfolder.
+# The description is shown to the LLM classifier — make it specific and accurate;
+# better descriptions mean better auto-filing.
+domains:
+  work:
+    description: "Work projects, meetings, professional notes and decisions."
+  personal:
+    description: "Personal thoughts, ideas, journaling, reflections."
+  reading:
+    description: "Articles, links, videos, papers, books — to read or already read."
+  tasks:
+    description: "To-dos, reminders, action items, things to follow up on."
+  finance:
+    description: "Money — budgets, expenses, financial notes and ideas."
+  health:
+    description: "Health, fitness, and well-being notes and logs."
+  fitness:
+    description: "General, non cycling activities."
+
+# Intent types the classifier can assign within a domain. Keep these few and
+# general — they describe the SHAPE of a note, not its topic.
+#
+# `note`, `link`, `task`, `log` are CAPTURE intents — the message is filed into
+# the vault. `question` is the QUERY intent — instead of being filed, the message
+# is answered from what is already in the vault (see USE_CASES UC-9 / UC-10).
+intents:
+  note: "A general note, thought, or idea."
+  link: "A URL, bookmark, or article to read later."
+  task: "A to-do, reminder, or action item."
+  log:  "A short dated log or journal entry."
+  question: "A question to answer from the vault — a fact lookup, or a request for advice/judgement. NOT filed; answered."
+
+# Classifier confidence threshold (0.0–1.0). Below this, the bot asks you to
+# confirm before filing, instead of guessing. See USE_CASES UC-5.
+confidence_threshold: 0.70
+
+# Optional — directory names kept OUT of the search corpus. Dot-folders
+# (.obsidian, .trash, .git) and node_modules are always skipped; list any extra
+# non-content folders here so their notes never pollute query results — e.g. a
+# raw-import staging folder whose duplicate copies would otherwise crowd out the
+# real note. A note is skipped when any component of its path matches a name.
+# exclude: [raw, archive, templates]
+
+# Projects — a first-class structure for time-bound, multi-document efforts
+# (USE_CASES UC-13). Unlike domains, projects are NOT listed here: each lives in
+# <vault>/<path>/<slug>/ and describes itself via its INDEX.md frontmatter. Add
+# one with:  bash scripts/new-project.sh <slug> "<Display Name>"
+#
+# When this block is absent the projects layer is simply off and queries behave
+# exactly as before. `path` must not collide with a domain name above.
+projects:
+  enabled: true
+  path: projects          # folder name under vault_path
+  staleness_days: 14      # a canonical doc older than this triggers a soft warning
+  context_budget: 28000   # max chars of project docs fed to the LLM per answer
