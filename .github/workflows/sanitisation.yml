@@ -1,0 +1,15 @@
+name: sanitisation-sweep
+
+# Fails the build if any personal identifier leaks into the repo.
+# Guards against a future kit update re-introducing private data.
+on:
+  push:
+  pull_request:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run sanitisation sweep
+        run: bash scripts/sanitisation_sweep.sh
