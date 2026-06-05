@@ -65,3 +65,14 @@ projects:
   path: projects          # folder name under vault_path
   staleness_days: 14      # a canonical doc older than this triggers a soft warning
   context_budget: 28000   # max chars of project docs fed to the LLM per answer
+
+# Date-range retrieval (USE_CASES UC-14). Answers time-relative questions like
+# "what did I do last week" or "what was my weight last Tuesday" by retrieving
+# notes by date, not by keyword. Notes must have a `date:` frontmatter field or
+# a YYYY-MM-DD filename prefix (e.g. 2026-06-01-health.md) to be reachable.
+# When this block is absent the feature is off and queries fall through to
+# ordinary lexical search — byte-for-byte pre-UC-14 behaviour.
+date_range:
+  enabled: true
+  max_notes: 20         # cap on notes per window; over this, lexically ranked + trimmed
+  context_budget: 24000 # max chars of in-range notes fed to the LLM per answer

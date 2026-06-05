@@ -13,6 +13,7 @@ design principle in USE_CASES.md).
 """
 from __future__ import annotations
 
+import datetime
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -124,8 +125,45 @@ def _derive_title(path: Path, body: str) -> str:
 
 
 # ── scoring ──────────────────────────────────────────────────────────────────
-def _score(terms: list[str], path: Path, body: str) -> tuple[float, str]:
-    """Score one note against the query terms. Returns (score, best-line snippet)."""
+def _frontmatter_text(raw: str) -> str:
+    """Extract frontmatter as tokenizer-friendly plain text for scoring.
+
+    Replaces underscores in key names with spaces so `weight_kg: 73.3` becomes
+    `weight kg 73.3` — allowing "weight" queries to match structured fields like
+    `weight_kg` and `body_fat_pct`. Returns "" when there is no frontmatter.
+    """
+    match = _FRONTMATTER_CAPTURE_RE.match(raw or "")
+    if not match:
+        return ""
+    # Replace underscores with spaces so weight_kg → "weight kg"
+    return match.group(1).replace("_", " ")
+
+
+def _score(
+    terms: list[str],
+    path: Path,
+    body: str,
+    *,
+    frontmatter_text: str = "",
+    frontmatter: dict | None = None,
+) -> tuple[float, str]:
+    """Score one note against the query terms. Returns (score, best-line snippet).
+
+    Scoring sources, in descending weight:
+      +5.0  per term  — filename match (the user's own label)
+      +3.0  per term  — heading match (strong structural signal)
+      +count          — term frequency in body text
+      +0.5× count     — term frequency in frontmatter (structured data,
+                        semantically equivalent to body text but lower weight
+                        because frontmatter fields repeat across many notes)
+      +1.5 × distinct² — breadth bonus (notes covering many query terms win)
+
+    Domain/type signal boost:
+      When the note's `type:` or `domain:` frontmatter field matches any query
+      term (e.g. `type: health-metrics` on a "weight" query that's clearly about
+      health), add +4.0 so semantically specialised notes outrank generic ones
+      that happen to repeat a query term more often.
+    """
     body_tokens = tokenize(body)
     if not terms:
         return 0.0, ""
@@ -135,6 +173,13 @@ def _score(terms: list[str], path: Path, body: str) -> tuple[float, str]:
         if tok in counts:
             counts[tok] += 1
 
+    # Frontmatter term frequency (0.5× weight)
+    fm_counts: dict[str, int] = {t: 0 for t in terms}
+    if frontmatter_text:
+        for tok in tokenize(frontmatter_text):
+            if tok in fm_counts:
+                fm_counts[tok] += 1
+
     filename_tokens = set(tokenize(path.name, keep_stopwords=True))
     filename_tokens |= {_stem(t) for t in filename_tokens}
     heading_tokens: set[str] = set()
@@ -142,12 +187,28 @@ def _score(terms: list[str], path: Path, body: str) -> tuple[float, str]:
         if line.lstrip().startswith("#"):
             heading_tokens.update(tokenize(line))
 
+    # Domain/type signal: if the note declares a type or domain that overlaps
+    # the query terms, it gets a one-time boost.  e.g. `type: health-metrics`
+    # when query contains "weight" or "hrv".
+    type_boost = 0.0
+    if frontmatter:
+        for field_name in ("type", "domain"):
+            field_val = str(frontmatter.get(field_name, "") or "").lower().strip()
+            if not field_val:
+                continue   # empty string must not match everything
+            if any(t in field_val or field_val in t for t in terms):
+                type_boost = 4.0
+                break
+
     score = 0.0
     distinct = 0
     for term in terms:
         hit_anywhere = False
         if counts[term]:
             score += counts[term]          # term frequency in the body
+            hit_anywhere = True
+        if fm_counts[term]:
+            score += fm_counts[term] * 0.5  # frontmatter at half weight
             hit_anywhere = True
         if term in heading_tokens:
             score += 3.0                   # a heading match is a strong signal
@@ -164,6 +225,7 @@ def _score(terms: list[str], path: Path, body: str) -> tuple[float, str]:
     # Reward breadth: a note touching many of the query's terms beats one that
     # merely repeats a single term, even if raw frequency is similar.
     score += distinct * distinct * 1.5
+    score += type_boost
 
     return score, _best_snippet(terms, body)
 
@@ -387,10 +449,16 @@ def search_vault(
             raw = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        fm_text = _frontmatter_text(raw)
+        fm_dict = read_frontmatter(raw)
         body = strip_frontmatter(raw).strip()
         if not body:
             continue
-        score, snippet = _score(terms, path, body)
+        score, snippet = _score(
+            terms, path, body,
+            frontmatter_text=fm_text,
+            frontmatter=fm_dict,
+        )
         if score <= 0:
             continue
         try:
@@ -411,6 +479,90 @@ def search_vault(
     # Sort by score desc; break ties by most-recently-modified, then path.
     hits.sort(key=lambda h: (-h.score, -_mtime(h.path), h.relpath))
     return hits[:limit]
+
+
+def search_by_date_range(
+    question: str,
+    cfg: Config,
+    window,   # DateWindow — avoid circular import; duck-typed
+    *,
+    max_notes: int = 20,
+    context_budget: int = 24000,
+) -> list[SearchHit]:
+    """Return notes whose date falls inside `window` (USE_CASES UC-14).
+
+    When the in-range set is ≤ `max_notes`, all are returned (ordered
+    chronologically so the LLM reasons over a timeline).  When it exceeds
+    `max_notes`, the in-range set is lexically ranked and the top `max_notes`
+    are kept — so "threshold sessions last month" still narrows correctly.
+
+    Notes with no resolvable date (no frontmatter `date:` / `created:` and no
+    YYYY-MM-DD filename prefix) are excluded from date-range retrieval but
+    remain findable by ordinary lexical search.
+    """
+    from .daterange import note_date  # local import — avoids circular dependency
+
+    terms = query_terms(question)
+    in_range: list[tuple[datetime.date, SearchHit]] = []
+
+    for path in iter_notes(cfg):
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        fm = read_frontmatter(raw)
+        nd = note_date(path, fm)
+        if nd is None or not window.contains(nd):
+            continue
+        body = strip_frontmatter(raw).strip()
+        if not body:
+            continue
+        try:
+            relpath = str(path.relative_to(cfg.vault_path))
+        except ValueError:
+            relpath = path.name
+        hit = SearchHit(
+            path=path,
+            relpath=relpath,
+            title=_derive_title(path, body),
+            score=0.0,   # date-range hits are chronologically ordered, not scored
+            snippet=_best_snippet(terms, body) if terms else "",
+            body=body,
+        )
+        in_range.append((nd, hit))
+
+    if not in_range:
+        return []
+
+    if len(in_range) <= max_notes:
+        # Chronological order — the LLM reasons over a timeline
+        in_range.sort(key=lambda x: x[0])
+        return [h for _, h in in_range]
+
+    # Over the cap — lexically rank and keep top max_notes.
+    if not terms:
+        in_range.sort(key=lambda x: x[0])
+        return [h for _, h in in_range[:max_notes]]
+
+    ranked: list[tuple[float, datetime.date, SearchHit]] = []
+    for nd, hit in in_range:
+        raw_text = hit.body
+        fm_text = ""
+        try:
+            full_raw = hit.path.read_text(encoding="utf-8", errors="ignore")
+            fm_text = _frontmatter_text(full_raw)
+            fm_dict = read_frontmatter(full_raw)
+        except OSError:
+            fm_dict = {}
+        sc, _ = _score(
+            terms, hit.path, raw_text,
+            frontmatter_text=fm_text,
+            frontmatter=fm_dict,
+        )
+        ranked.append((sc, nd, hit))
+
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    return [h for _, _, h in ranked[:max_notes]]
 
 
 def _mtime(path: Path) -> float:

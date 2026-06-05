@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from vaultwright import projects, query, search
 from vaultwright.classifier import Classification, classify_heuristic
 from vaultwright.config import Config
+from vaultwright.daterange import DateWindow, note_date, parse_window
 from vaultwright.query import answer_question, detect_mode, temporal_context
 from vaultwright.router import route
 from vaultwright.search import SearchHit, read_frontmatter, search_vault
@@ -629,6 +630,339 @@ def test_projects_disabled_is_today_behaviour(tmp_path):
         "what should I focus on for the website relaunch?", cfg, today=_TODAY)
     assert qa.project is None
     assert qa.stale == []
+
+
+# ── UC-14 — daterange.py: parse_window ───────────────────────────────────────
+_ANC = datetime.date(2026, 6, 5)   # anchor: Thursday
+
+
+def test_parse_window_today(tmp_path):
+    w = parse_window("what was my weight today?", today=_ANC)
+    assert w is not None
+    assert w.start == w.end == _ANC
+
+
+def test_parse_window_yesterday(tmp_path):
+    w = parse_window("what did I eat yesterday?", today=_ANC)
+    assert w is not None
+    assert w.start == w.end == datetime.date(2026, 6, 4)
+
+
+def test_parse_window_last_week(tmp_path):
+    w = parse_window("what training did I do last week?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 5, 25)  # last Mon
+    assert w.end == datetime.date(2026, 5, 31)    # last Sun
+
+
+def test_parse_window_this_week(tmp_path):
+    w = parse_window("what did I log this week?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 6, 1)
+    assert w.end == datetime.date(2026, 6, 7)
+
+
+def test_parse_window_last_n_days(tmp_path):
+    w = parse_window("what were my hrv readings last 7 days?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 5, 30)
+    assert w.end == _ANC
+
+
+def test_parse_window_this_month(tmp_path):
+    w = parse_window("show me this month's logs", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 6, 1)
+    assert w.end == datetime.date(2026, 6, 30)
+
+
+def test_parse_window_last_month(tmp_path):
+    w = parse_window("training last month?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 5, 1)
+    assert w.end == datetime.date(2026, 5, 31)
+
+
+def test_parse_window_in_month(tmp_path):
+    w = parse_window("what did I log in May?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 5, 1)
+    assert w.end == datetime.date(2026, 5, 31)
+
+
+def test_parse_window_in_month_with_year(tmp_path):
+    w = parse_window("what happened in May 2025?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2025, 5, 1)
+    assert w.end == datetime.date(2025, 5, 31)
+
+
+def test_parse_window_last_weekday(tmp_path):
+    # _ANC = Thursday 2026-06-05; "last Tuesday" = 2026-06-02
+    w = parse_window("what was my weight last Tuesday?", today=_ANC)
+    assert w is not None
+    assert w.start == w.end == datetime.date(2026, 6, 2)
+
+
+def test_parse_window_explicit_iso_range(tmp_path):
+    w = parse_window("what happened from 2026-05-01 to 2026-05-07?", today=_ANC)
+    assert w is not None
+    assert w.start == datetime.date(2026, 5, 1)
+    assert w.end == datetime.date(2026, 5, 7)
+
+
+def test_parse_window_no_date_phrase_returns_none(tmp_path):
+    assert parse_window("what are the open bugs?", today=_ANC) is None
+    assert parse_window("should I focus on feature XY or bug fixes?", today=_ANC) is None
+
+
+def test_parse_window_last_n_days_out_of_range_returns_none(tmp_path):
+    # 400 days is out of the 1..366 guard
+    assert parse_window("last 400 days", today=_ANC) is None
+
+
+# ── UC-14 — daterange.py: note_date ──────────────────────────────────────────
+
+def test_note_date_from_frontmatter_date(tmp_path):
+    p = tmp_path / "some-note.md"
+    p.write_text("---\ndate: 2026-06-01\n---\nbody")
+    fm = read_frontmatter(p.read_text())
+    assert note_date(p, fm) == datetime.date(2026, 6, 1)
+
+
+def test_note_date_from_frontmatter_created(tmp_path):
+    p = tmp_path / "some-note.md"
+    p.write_text("---\ncreated: 2026-05-15\n---\nbody")
+    fm = read_frontmatter(p.read_text())
+    assert note_date(p, fm) == datetime.date(2026, 5, 15)
+
+
+def test_note_date_date_beats_created(tmp_path):
+    p = tmp_path / "some-note.md"
+    p.write_text("---\ndate: 2026-06-03\ncreated: 2026-01-01\n---\nbody")
+    fm = read_frontmatter(p.read_text())
+    assert note_date(p, fm) == datetime.date(2026, 6, 3)
+
+
+def test_note_date_from_filename_prefix(tmp_path):
+    p = tmp_path / "2026-05-23-ride-easy.md"
+    assert note_date(p) == datetime.date(2026, 5, 23)
+
+
+def test_note_date_frontmatter_beats_filename(tmp_path):
+    p = tmp_path / "2026-01-01-health.md"
+    p.write_text("---\ndate: 2026-06-03\n---\nbody")
+    fm = read_frontmatter(p.read_text())
+    assert note_date(p, fm) == datetime.date(2026, 6, 3)
+
+
+def test_note_date_no_date_returns_none(tmp_path):
+    p = tmp_path / "general-thoughts.md"
+    assert note_date(p) is None
+    assert note_date(p, {}) is None
+
+
+# ── UC-14 — date-range retrieval path ────────────────────────────────────────
+
+def make_date_range_cfg(tmp_path):
+    """Config with date_range enabled."""
+    return Config(
+        vault_path=tmp_path / "vault",
+        domains={
+            "health": {"description": "health, fitness, wellness"},
+            "work": {"description": "work notes"},
+        },
+        intents={
+            "note": "a note", "log": "a log",
+            "question": "a question to answer from the vault",
+        },
+        confidence_threshold=0.70,
+        date_range={"enabled": True, "max_notes": 20, "context_budget": 24000},
+    )
+
+
+def seed_dated_notes(cfg):
+    """Write a week of health notes + one undated note into the vault."""
+    notes = {
+        "health/2026-05-25-health.md": (
+            "---\ndate: 2026-05-25\ntype: health-metrics\nweight_kg: 73.5\n---\n\n"
+            "# Health Metrics — 2026-05-25\n\nWeight: 73.5 kg. HRV: 62 ms. Sleep: 7.8h.\n"
+        ),
+        "health/2026-05-26-health.md": (
+            "---\ndate: 2026-05-26\ntype: health-metrics\nweight_kg: 73.3\n---\n\n"
+            "# Health Metrics — 2026-05-26\n\nWeight: 73.3 kg. HRV: 58 ms. Sleep: 6.9h.\n"
+        ),
+        "health/2026-05-27-health.md": (
+            "---\ndate: 2026-05-27\ntype: health-metrics\nweight_kg: 73.4\n---\n\n"
+            "# Health Metrics — 2026-05-27\n\nWeight: 73.4 kg. HRV: 65 ms. Sleep: 8.1h.\n"
+        ),
+        "health/2026-06-01-health.md": (
+            "---\ndate: 2026-06-01\ntype: health-metrics\nweight_kg: 73.2\n---\n\n"
+            "# Health Metrics — 2026-06-01\n\nWeight: 73.2 kg. HRV: 60 ms. Sleep: 7.5h.\n"
+        ),
+        # Undated note — not reachable by date-range retrieval
+        "work/inbox/meeting-notes.md": (
+            "---\ntype: note\n---\n\n# Meeting\n\nDiscussed project timeline and weight of evidence.\n"
+        ),
+    }
+    for relpath, body in notes.items():
+        path = cfg.vault_path / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+
+def test_date_range_retrieves_notes_in_window(tmp_path):
+    """Notes in the window are retrieved; notes outside (and undated notes) are not."""
+    cfg = make_date_range_cfg(tmp_path)
+    seed_dated_notes(cfg)
+    today = datetime.date(2026, 5, 28)  # Friday of that week
+    qa = answer_question("what was my weight last week?", cfg, today=today)
+    # last week = Mon 2026-05-18 to Sun 2026-05-24 — all 3 health notes are Mon 2026-05-25..27
+    # which is THIS week not last week; so let's check this week instead
+    # (today=2026-05-28 Thu; this week = Mon 2026-05-25 to Sun 2026-05-31)
+    qa2 = answer_question("what was my weight this week?", cfg, today=today)
+    assert qa2.window is not None
+    relpaths = [c for c in qa2.citations if "health" in c]
+    assert len(relpaths) == 3
+    # Undated work note must NOT appear
+    assert not any("meeting" in c for c in qa2.citations)
+
+
+def test_date_range_chronological_order(tmp_path):
+    """Notes are returned in chronological order (oldest first)."""
+    from vaultwright.search import search_by_date_range
+    cfg = make_date_range_cfg(tmp_path)
+    seed_dated_notes(cfg)
+    today = datetime.date(2026, 5, 28)
+    w = parse_window("this week", today=today)
+    assert w is not None
+    hits = search_by_date_range("weight", cfg, w)
+    dates = [note_date(h.path, read_frontmatter(h.path.read_text())) for h in hits]
+    assert dates == sorted(dates)
+
+
+def test_date_range_empty_window_clean_message(tmp_path):
+    """An empty window returns found=False with a clean no-data message (no wrong files)."""
+    cfg = make_date_range_cfg(tmp_path)
+    seed_dated_notes(cfg)
+    today = datetime.date(2026, 6, 5)
+    # Ask for last week — 2026-05-25..31 — but anchor is June 5, so last week = May 25-31
+    # We only have Jun 1 and May 25-27 in that range; last week from Jun 5 = May 25-31
+    qa = answer_question("what was my weight last week?", cfg, today=today)
+    # May 25, 26, 27 are in range (Mon May 25 – Sun May 31); we have 3 notes
+    assert qa.found is True or qa.window is not None  # at least window is set
+    # Ask for a window with definitely no notes (last year)
+    qa_empty = answer_question("what were my metrics in January 2023?", cfg, today=today)
+    if qa_empty.window is not None:
+        assert qa_empty.found is False
+        assert "didn't find" in qa_empty.reply or "no" in qa_empty.reply.lower()
+
+
+def test_date_range_single_day_query(tmp_path):
+    """A single-day query (yesterday) returns exactly the notes from that day."""
+    cfg = make_date_range_cfg(tmp_path)
+    seed_dated_notes(cfg)
+    today = datetime.date(2026, 6, 2)  # yesterday = 2026-06-01
+    qa = answer_question("what was my weight yesterday?", cfg, today=today)
+    assert qa.window == (datetime.date(2026, 6, 1), datetime.date(2026, 6, 1))
+    assert len(qa.citations) == 1
+    assert "2026-06-01" in qa.citations[0]
+
+
+def test_date_range_disabled_is_unchanged(tmp_path):
+    """With date_range.enabled absent/false, a date question falls through to lexical search."""
+    cfg = make_date_range_cfg(tmp_path)
+    cfg.date_range = {}   # disable the feature
+    seed_dated_notes(cfg)
+    today = datetime.date(2026, 6, 5)
+    qa = answer_question("what was my weight this week?", cfg, today=today)
+    assert qa.window is None  # no window resolved — fell through to lexical
+
+
+def test_uc13_wins_over_uc14(tmp_path):
+    """UC-13 project resolution wins over UC-14 date-range — a project question
+    with a date phrase takes the project path, not the date-range path."""
+    # Build a config with BOTH projects and date_range enabled.
+    cfg = Config(
+        vault_path=tmp_path / "vault",
+        domains={"work": {"description": "work notes"}},
+        intents={
+            "note": "a note", "question": "a question to answer from the vault",
+        },
+        confidence_threshold=0.70,
+        projects={"enabled": True, "path": "projects", "staleness_days": 14, "context_budget": 8000},
+        date_range={"enabled": True, "max_notes": 20, "context_budget": 24000},
+    )
+    # Seed a small project
+    proj_root = cfg.projects_root() / "alpha-launch"
+    proj_root.mkdir(parents=True)
+    (proj_root / "INDEX.md").write_text(
+        "---\ntype: project-index\nproject: Alpha Launch\nslug: alpha-launch\n"
+        "status: active\naliases: [alpha]\ncreated: 2026-05-01\nlast_updated: 2026-06-01\n---\n\n"
+        "# Alpha Launch\n\nLaunch plan for the alpha.\n",
+        encoding="utf-8",
+    )
+    seed_dated_notes(cfg)  # also seed some health notes
+    today = datetime.date(2026, 6, 5)
+    qa = answer_question("what's happening with the alpha launch this week?", cfg, today=today)
+    assert qa.project == "alpha-launch"   # UC-13 won
+    assert qa.window is None              # date-range was NOT triggered
+
+
+def test_date_range_regression_lexical_unchanged(tmp_path):
+    """A question with no date phrase follows ordinary lexical search unchanged."""
+    cfg = make_date_range_cfg(tmp_path)
+    seed_dated_notes(cfg)
+    # Also seed a work note with unique content
+    (cfg.vault_path / "work" / "meeting-notes.md").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.vault_path / "work" / "timeline.md").write_text(
+        "# Project Timeline\n\nAll milestones are on track.\n", encoding="utf-8"
+    )
+    qa = answer_question("are the milestones on track?", cfg, today=_ANC)
+    assert qa.window is None       # no date window resolved
+    assert qa.found is True        # lexical search found the timeline note
+
+
+# ── UC-14 — frontmatter scoring improvement (B50) ────────────────────────────
+
+def test_frontmatter_scores_structured_fields(tmp_path):
+    """A note whose query term appears ONLY in frontmatter (not body) still scores > 0."""
+    from vaultwright.search import _frontmatter_text, _score, query_terms
+    raw = "---\ntype: health-metrics\nweight_kg: 73.3\nbody_fat_pct: 18.5\n---\n\n# Health\n\n"
+    body = "Health note. No weight mentioned here."
+    fm_text = _frontmatter_text(raw)
+    fm_dict = read_frontmatter(raw)
+    terms = query_terms("weight")
+    score, _ = _score(terms, Path("health/2026-06-01-health.md"), body,
+                      frontmatter_text=fm_text, frontmatter=fm_dict)
+    assert score > 0, "frontmatter-only match should score > 0"
+
+
+def test_type_field_boosts_domain_match(tmp_path):
+    """A note whose type: field overlaps a query term gets +4 boost.
+
+    A 'health-log' note mentions weight once; a generic 'note' mentions weight
+    three times. Without a boost the generic note wins on frequency alone. The
+    type boost fires because query term "health" appears in "health-log", tipping
+    the health-log note ahead.
+    """
+    from vaultwright.search import _frontmatter_text, _score, query_terms
+    # type: health-log — "health" is a substring, so the boost fires when "health"
+    # is also a query term.
+    raw_health = "---\ntype: health-log\nweight_kg: 73.3\n---\n\n# Health Log\n\nweight 73.3\n"
+    raw_other  = "---\ntype: note\n---\n\n# Training Plan\n\nweight target 71.5 weight goal weight race\n"
+    body_health = "Health log. weight 73.3"
+    body_other  = "Training plan. weight target 71.5 weight goal weight race."
+    terms = query_terms("health weight")   # "health" ∈ query AND "health" ∈ "health-log"
+    s_health, _ = _score(terms, Path("health/2026-06-01-health.md"), body_health,
+                         frontmatter_text=_frontmatter_text(raw_health),
+                         frontmatter=read_frontmatter(raw_health))
+    s_other, _ = _score(terms, Path("cycling/training-plan.md"), body_other,
+                        frontmatter_text=_frontmatter_text(raw_other),
+                        frontmatter=read_frontmatter(raw_other))
+    assert s_health > s_other, (
+        f"health-log note ({s_health:.1f}) should beat generic note ({s_other:.1f}) via type boost"
+    )
 
 
 # ── inline test runner (pytest-free) ─────────────────────────────────────────

@@ -37,9 +37,11 @@ from dataclasses import dataclass, field
 
 from .classifier import DEFAULT_MODEL
 from .config import Config
+from .daterange import DateWindow, parse_window
 from .projects import Project, resolve_project, retrieval_paths
 from .search import (
-    SearchHit, load_note_as_hit, query_terms, relevant_excerpt, search_vault,
+    SearchHit, load_note_as_hit, query_terms, relevant_excerpt,
+    search_by_date_range, search_vault,
 )
 
 log = logging.getLogger("vaultwright.query")
@@ -79,7 +81,8 @@ class QueryAnswer:
     source: str                    # "llm" | "no-llm" | "no-context"
     citations: list[str] = field(default_factory=list)   # cited note relpaths
     project: str | None = None                           # resolved project slug (UC-13)
-    stale: list[str] = field(default_factory=list)        # canonical docs past staleness_days
+    stale: list[str] = field(default_factory=list)       # canonical docs past staleness_days
+    window: tuple[datetime.date, datetime.date] | None = None  # resolved date window (UC-14)
 
 
 # ── mode detection ───────────────────────────────────────────────────────────
@@ -339,8 +342,14 @@ def answer_question(
     project_slug: str | None = None
     stale_docs: list = []
     is_project = False
+    resolved_window: DateWindow | None = None
+    is_date_range = False
 
     if hits is None:
+        # Resolution order:
+        #   1. UC-13 project-scoped retrieval (wins over date-range)
+        #   2. UC-14 date-range retrieval
+        #   3. UC-9/UC-10 ordinary lexical search
         project = (
             resolve_project(question, cfg) if cfg.projects_enabled else None
         )
@@ -349,12 +358,37 @@ def answer_question(
             stale_docs = _stale_docs(project, cfg, today)
             project_slug = project.slug
             is_project = True
+        elif cfg.date_range_enabled:
+            resolved_window = parse_window(question, today)
+            if resolved_window is not None:
+                hits = search_by_date_range(
+                    question, cfg, resolved_window,
+                    max_notes=cfg.date_range_max_notes,
+                    context_budget=cfg.date_range_context_budget,
+                )
+                is_date_range = True
+                if not hits:
+                    # Clean "no data" — do NOT fall back to lexical search and
+                    # return wrong notes.
+                    day_label = resolved_window.label
+                    msg = (
+                        f"I didn't find any notes for {day_label}. "
+                        "If you logged something that day, check that the note "
+                        "has a `date:` frontmatter field or a YYYY-MM-DD filename prefix."
+                    )
+                    return QueryAnswer(
+                        reply=msg, answer=msg, found=False, mode=mode,
+                        source="no-context", window=(resolved_window.start, resolved_window.end),
+                    )
+            else:
+                hits = search_vault(question, cfg, limit=limit)
         else:
             hits = search_vault(question, cfg, limit=limit)
 
     stale = [doc.relpath for doc in stale_docs]
 
     # UC-9 acceptance: no relevant notes -> an honest answer, never a guess.
+    # (UC-14 "empty window" is handled earlier with a more specific message.)
     if not hits:
         msg = (
             "I don't have anything in your vault about that. "
@@ -371,6 +405,13 @@ def answer_question(
             hits, per_note_budget=budget, total_budget=budget,
             warn_overflow=True,
         )
+    elif is_date_range:
+        # Date-range notes are already in chronological order; load with fair
+        # share so every note in the window reaches the LLM.
+        context = _build_context(
+            hits, terms=query_terms(question), fair_share=True,
+            total_budget=cfg.date_range_context_budget,
+        )
     else:
         context = _build_context(
             hits, terms=query_terms(question), fair_share=True,
@@ -379,8 +420,13 @@ def answer_question(
     system = _ADVICE_SYSTEM if mode == "advice" else _QA_SYSTEM
     temperature = 0.3 if mode == "advice" else 0.0
     grounding = temporal_context(today)
+    window_line = (
+        f"The question is about {resolved_window.label}.\n"
+        if resolved_window is not None else ""
+    )
     user = (
-        f"{grounding}\n\n"
+        f"{grounding}\n"
+        f"{window_line}\n"
         f"NOTES FROM THE VAULT:\n\n{context}\n\n"
         f"---\nQUESTION: {question.strip()}"
     )
@@ -401,6 +447,7 @@ def answer_question(
     if stale_note:
         reply = f"{reply}\n\n{stale_note}"
 
+    window_tuple = (resolved_window.start, resolved_window.end) if resolved_window else None
     return QueryAnswer(
         reply=reply,
         answer=answer,
@@ -410,4 +457,5 @@ def answer_question(
         citations=citations,
         project=project_slug,
         stale=stale,
+        window=window_tuple,
     )

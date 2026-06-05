@@ -65,6 +65,24 @@ class Config:
         """Max chars of project docs fed to the LLM per project-scoped answer."""
         return int(self.projects.get("context_budget", 28000))
 
+    # ── date-range retrieval (USE_CASES UC-14) ───────────────────────────────
+    # Backward compatible: when the `date_range:` block is absent, the feature
+    # is disabled and every query falls through to ordinary lexical search —
+    # byte-for-byte today's behaviour.
+    date_range: dict = field(default_factory=dict)
+
+    @property
+    def date_range_enabled(self) -> bool:
+        return bool(self.date_range.get("enabled", False))
+
+    @property
+    def date_range_max_notes(self) -> int:
+        return int(self.date_range.get("max_notes", 20))
+
+    @property
+    def date_range_context_budget(self) -> int:
+        return int(self.date_range.get("context_budget", 24000))
+
     # ── search corpus hygiene ────────────────────────────────────────────────
     @property
     def exclude_dirs(self) -> set[str]:
@@ -118,6 +136,9 @@ def load(config_file: Path | None = None) -> Config:
     # Optional projects: block (USE_CASES UC-13). Absent -> {} -> feature disabled.
     projects = data.get("projects") or {}
 
+    # Optional date_range: block (USE_CASES UC-14). Absent -> {} -> feature disabled.
+    date_range = data.get("date_range") or {}
+
     # Optional exclude: list — extra directory names kept out of the search corpus.
     exclude = data.get("exclude") or []
 
@@ -127,6 +148,7 @@ def load(config_file: Path | None = None) -> Config:
         intents=intents,
         confidence_threshold=threshold,
         projects=projects,
+        date_range=date_range,
         exclude=exclude,
         raw=data,
     )
