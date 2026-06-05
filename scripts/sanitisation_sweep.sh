@@ -21,16 +21,19 @@ echo "Vaultwright sanitisation sweep — scanning $ROOT"
 # Excluded by name — none of these are part of the published repo:
 #  - this script itself (it holds the denylist);
 #  - BUILD_NOTES.md (a dev-only file documenting the publishing rules);
+#  - .claude/ — agent-team workflow, gitignored, never shipped;
+#  - CLAUDE.md — operator persistent memory, gitignored, never shipped;
 #  - personal dogfood configs (domains.*.yaml) — gitignored, never shipped, so
 #    CI (which checks out only committed files) never sees them. The shipped
 #    template config/domains.yaml has only one dot, is NOT matched by the
 #    domains.*.yaml glob, and is still scanned.
 EXCLUDES=(--exclude=sanitisation_sweep.sh --exclude=BUILD_NOTES.md
+          --exclude=CLAUDE.md
           --exclude='domains.*.yaml')
 
 for pat in "${PATTERNS[@]}"; do
   hits=$(grep -rniI "$pat" . \
-            --exclude-dir=.git --exclude-dir=.venv --exclude-dir=venv \
+            --exclude-dir=.git --exclude-dir=.venv --exclude-dir=venv --exclude-dir=.claude \
             "${EXCLUDES[@]}" 2>/dev/null || true)
   if [ -n "$hits" ]; then
     echo "FAIL: identifier '$pat' found:"
@@ -41,7 +44,7 @@ done
 
 # Absolute home paths must not be hardcoded.
 hits=$(grep -rnI "/Users/" . \
-          --exclude-dir=.git --exclude-dir=.venv --exclude-dir=venv \
+          --exclude-dir=.git --exclude-dir=.venv --exclude-dir=venv --exclude-dir=.claude \
           "${EXCLUDES[@]}" 2>/dev/null || true)
 if [ -n "$hits" ]; then
   echo "FAIL: hardcoded /Users/ path found:"
