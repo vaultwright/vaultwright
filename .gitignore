@@ -32,3 +32,6 @@ stories/
 specs/
 research-briefs/
 validations/
+
+# Orchestrator working file - internal, never publish
+TASK_LIST.md
