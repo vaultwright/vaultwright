@@ -73,7 +73,8 @@ version — polished domain templates, an illustrated step-by-step setup guide, 
 presets, and a written end-to-end walkthrough — for people who would rather not
 assemble the pieces themselves.
 
-> 🔗 *Link added at launch.*
+It isn't out yet. **[Join the founding list](https://forms.gle/6JF7uRDAVTSRCZ3w6)** to get
+it first, at the founding price — and tell me the one thing you most want it to handle.
 
 ## License
 

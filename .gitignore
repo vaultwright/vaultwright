@@ -35,3 +35,7 @@ validations/
 
 # Orchestrator working file - internal, never publish
 TASK_LIST.md
+
+# --- Hardening 2026-06-11 (launch retro §3D / ADR-049) ---
+docs/adr/
+**/*RTG*.md
